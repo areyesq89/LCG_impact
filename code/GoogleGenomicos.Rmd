@@ -130,6 +130,40 @@ library(magrittr)
 pubRecords <- pubRecords %>%
   dplyr::left_join( pubmedDat )
 
+
+# if(!file.exists("pubmedSearchesAbstracts.rds")){
+#   
+#   ## Get the pubmed IDs
+#   pubmed_ids <- unlist(lapply(pubmedSearches, function(x){ x$IdList$Id }))
+#   pubmedAbstracts <- lapply(1:length(pubmed_ids), function(x){
+#     
+#     pubmed_id <- as.vector(pubmed_ids[x])
+#     my_query_string <- paste0(pubmed_id, "[PMID]")
+#     # print(my_query_string)
+#     
+#     ## Query entrez 
+#     my_query <- try( get_pubmed_ids(my_query_string) )
+#     Sys.sleep( round( abs(rnorm(1, 60, 20) ) ) )
+#     
+#     ## Fetch the records
+#     xml_record <- try( fetch_pubmed_data(my_query) )
+#     Sys.sleep( round( abs(rnorm(1, 60, 20) ) ) )
+#     
+#     ## Extract info (including the abstract) 
+#     abstract_df <- lapply(xml_record, article_to_df, 
+#                                   max_chars = -1, getAuthors = FALSE)
+#     abstract <- abstract_df[[1]]["abstract"]
+#     
+#     cat(sprintf("Processed %d of %d: %s\n", x, length(pubmed_ids), my_query_string) )
+#   
+#   abstract
+#   } )
+# 
+#   names( pubmedAbstracts ) <- pubmed_ids
+#   saveRDS(pubmedSearches, file="pubmedSearchesAbstracts.rds")
+# }
+# pubmedAbstracts <- readRDS("pubmedSearchesAbstracts.rds")
+
   
 ```
 # Publication records
@@ -194,13 +228,44 @@ pubRecords %>%
 The distribution above has a long tail. Obviously, the more time a person stays in research, the more publications that person will have. Thus, a more informative plot is one that also considers the date of graduation. To do so, I plotted the number of publications as a function of the years since graduation. 
 
 ```{r scatterpub}
-pubRecords %>%
-  dplyr::group_by( GoogleScholarID ) %>%
-  dplyr::summarize( number=dplyr::n(), graduation=unique(Graduation) ) %>%
-  dplyr::mutate( timeFromGrad=(Sys.Date()- graduation) ) %>%
-  ggplot( aes( timeFromGrad/30/12, number ) ) +
-  geom_point(alpha=0.5) +
-  labs(x="Time since graduation (years)", y="Number of publications")
+library(plotly)
+library(RColorBrewer)
+
+pubRecordsinYears <- pubRecords %>%
+                      dplyr::group_by( GoogleScholarID ) %>%
+                      dplyr::summarize( number=dplyr::n(), graduation=unique(Graduation) ) %>%
+                      dplyr::mutate( Years_from_Graduation = Sys.Date()- graduation)
+
+## Set the time of graduation in years
+pubRecordsinYears$Years_from_Graduation <- as.numeric(gsub(pubRecordsinYears$Years_from_Graduation, pattern = "days", replacement = ""))
+pubRecordsinYears$Years_from_Graduation <- round(pubRecordsinYears$Years_from_Graduation/30/12, digits = 1)
+
+## Merge the table to obtain the alumni names
+pubRecordsinYears <- merge(pubRecordsinYears, dat, by = "GoogleScholarID")
+colnames(pubRecordsinYears)[2] <- "Number_of_publications"
+
+
+## Generate a color palette: one color per cohort
+## 'Dark2' palette seed max = 8. See http://colorbrewer2.org
+nb.cohorts <- max(as.vector(pubRecordsinYears$Cohort), na.rm = T)
+nb.seed.colors <- 8
+class.colors <- colorRampPalette(brewer.pal(nb.seed.colors, "Dark2"), space="Lab")(nb.cohorts)
+names(class.colors) <- paste0("Cohort_", 1:nb.cohorts)
+names(class.colors) <- 1:nb.cohorts
+
+print(class.colors)
+
+scatter.pub.plot <- pubRecordsinYears %>%
+                      ggplot( aes(x = Years_from_Graduation, y = Number_of_publications, labels = Name, color = as.factor(Cohort) ) ) +
+                      geom_point(alpha=0.5) +
+                      scale_color_manual(values = class.colors, labels = names(class.colors)) +
+                      labs(x="Time since graduation (years)", y="Number of publications")
+
+## Convert the plot in plotly format
+scatter.pub.plot <- ggplotly(scatter.pub.plot,
+                            tooltip = c("x", "y", "Name"))
+scatter.pub.plot
+
 ```
 
 There seems to be quite some variability. There are people that have many papers! The variability in the plot above could reflect differences in the collaborative environment between fields or institutions. For example, people working in more collaborative fields such as consortia will have more papers. Who are the *alumni* with the highest number of publications? Below is top 10 ranking, which indicates us that the clear outlier from the plots above corresponds to [Claudia Gonzaga-Jauregui](https://scholar.google.com/citations?user=YMcmOsAAAAAJ&hl) from the first LCG class, who has co-authored `r sum( pubRecords$GoogleScholarID %in% "YMcmOsAAAAAJ" )` papers.
@@ -287,6 +352,7 @@ dplyr::left_join( citRates, pubPerPerson ) %>%
 Finally, I am plotting the cumulative number of citations per *alumni* as a function of the time since graduation from the LCG. Each line is one *alumnus* and the red line is a [loess regression curve](https://en.wikipedia.org/wiki/Local_regression). As expected, the number of citations increases with time. 
 
 ```{r scatcit}
+
 pr <- citHistory %>%
   dplyr::mutate( timeFromGrad=as.numeric(year-Graduation) ) %>%
   dplyr::group_by( GoogleScholarID ) %>%
@@ -294,17 +360,32 @@ pr <- citHistory %>%
 
 loessFit <- loess(cumCites~timeFromGrad, data=pr)
 
-citHistory %>%
-  dplyr::mutate( timeFromGrad=as.numeric(year-Graduation) ) %>%
+
+citHistoryinYears <- citHistory %>%
+  dplyr::mutate( Years_from_Graduation=as.numeric(year-Graduation) ) %>%
   dplyr::group_by( GoogleScholarID ) %>%
-  dplyr::mutate( cumCites=cumsum(cites) ) %>%
-  ggplot( aes( timeFromGrad/30/12, cumCites ) ) +
+  dplyr::mutate( Citations=cumsum(cites) ) %>% 
+  dplyr::ungroup()
+
+## Set the time of graduation in years
+citHistoryinYears$Years_from_Graduation <- as.numeric(gsub(citHistoryinYears$Years_from_Graduation, pattern = "days", replacement = ""))
+citHistoryinYears$Years_from_Graduation <- round(citHistoryinYears$Years_from_Graduation/30/12, digits = 1)
+
+
+citHistoryinYears.plot <- citHistoryinYears %>%
+  ggplot( aes( Years_from_Graduation, Citations,  label = Name, color = as.factor(Cohort)) ) +
   geom_point(alpha=0.6) + 
-  geom_smooth(col="red", fill="red") +
   geom_line( aes(group=GoogleScholarID), alpha=0.2 ) +
+  geom_smooth(col="red", fill="red") +
+  scale_color_manual(values = class.colors, labels = names(class.colors)) +
   scale_y_sqrt( breaks=c(20, 100,  500, 1000, 2000, 3500, 5000), 
                 minor_breaks=seq(100, 500, 100) ) +
   labs(y="# of citations (cumulative)", x="Years from graduation from LCG")
+
+## Convert the plot in plotly format
+citHistoryinYears.plot <- ggplotly(citHistoryinYears.plot,
+                tooltip = c("x", "y", "Name"))
+citHistoryinYears.plot
 ```
 
 According to the loess regression, the average *alumni* has around `r round(predict(loessFit, 365*7))` citations after 7 years of graduation. 
@@ -359,4 +440,3 @@ However, it is evident is that **genomics research has been benefited from the c
 ```{r}
 sessionInfo()
 ```
-
